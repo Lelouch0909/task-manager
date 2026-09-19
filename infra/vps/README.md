@@ -3,7 +3,8 @@
 Le déploiement demandé utilise `deploy@212.227.80.225`, séparément des conteneurs Virall.
 
 - API : `https://taskmanager.212.227.80.225.sslip.io`
-- Port direct : `http://212.227.80.225:8082` (utiliser HTTPS pour l’authentification).
+- Port public : **443**, en HTTPS via Traefik.
+- Port technique local au serveur : `http://127.0.0.1:8082`.
 - Disponibilité : `/actuator/health/readiness`.
 - Dossier : `/home/deploy/taskmanager`.
 - Projet Compose : `taskmanager-vps` ; MySQL privé dans son propre volume.
