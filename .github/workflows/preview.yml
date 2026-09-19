@@ -1,0 +1,204 @@
+name: Task Manager CI/CD
+
+on:
+  pull_request:
+    branches: [develop, preview, main, master]
+  push:
+    branches: [develop, preview, main, master]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Déployer preview sur GCE après les tests
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Do not interrupt a deployment halfway through a migration or rollback.
+concurrency:
+  group: taskmanager-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: api/pom.xml
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --prefix web
+      - name: Prepare integration database image
+        run: docker pull mysql:8.0
+      - name: Unit, integration and real web Fetch contract tests; package API
+        working-directory: api
+        run: bash mvnw -B verify -Pintegration -Dweb.contract.tests=true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-test-results
+          path: |
+            api/target/surefire-reports/
+            api/target/failsafe-reports/
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: api-jar
+          path: api/target/api-0.0.1-SNAPSHOT.jar
+          if-no-files-found: error
+          retention-days: 7
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+        env:
+          VITE_API_BASE_URL: /api
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  infrastructure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m compileall -q infra/gcp
+      - run: python3 -m unittest discover -s infra/gcp -p 'test_*.py'
+
+  images:
+    needs: [backend, frontend, infrastructure]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      api: ${{ steps.refs.outputs.api }}
+      web: ${{ steps.refs.outputs.web }}
+    env:
+      PUBLISH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/preview' }}
+      REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev
+      REPOSITORY: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REPOSITORY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: api-jar
+          path: api/target/
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist/
+      - uses: google-github-actions/auth@v3
+        if: env.PUBLISH == 'true'
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_BUILD_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+        if: env.PUBLISH == 'true'
+      - name: Registry authentication
+        if: env.PUBLISH == 'true'
+        run: gcloud auth configure-docker "$REGISTRY" --quiet
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        id: api
+        with:
+          context: api
+          push: ${{ env.PUBLISH == 'true' }}
+          tags: ${{ env.PUBLISH == 'true' && format('{0}/api:{1}', env.REPOSITORY, github.sha) || 'taskmanager-api:ci' }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+      - uses: docker/build-push-action@v6
+        id: web
+        with:
+          context: web
+          push: ${{ env.PUBLISH == 'true' }}
+          tags: ${{ env.PUBLISH == 'true' && format('{0}/web:{1}', env.REPOSITORY, github.sha) || 'taskmanager-web:ci' }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+      - id: refs
+        if: env.PUBLISH == 'true'
+        env:
+          API_DIGEST: ${{ steps.api.outputs.digest }}
+          WEB_DIGEST: ${{ steps.web.outputs.digest }}
+        run: |
+          printf 'api=%s/api@%s\n' "$REPOSITORY" "$API_DIGEST" >> "$GITHUB_OUTPUT"
+          printf 'web=%s/web@%s\n' "$REPOSITORY" "$WEB_DIGEST" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: images
+    if: github.ref == 'refs/heads/preview' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.deploy))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: preview
+      url: https://${{ vars.PREVIEW_DOMAIN }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v3
+      - name: Deploy immutable images and check HTTPS readiness
+        run: python3 infra/gcp/deploy_from_ci.py
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCE_INSTANCE: ${{ vars.GCE_INSTANCE }}
+          GCE_ZONE: ${{ vars.GCE_ZONE }}
+          RUNTIME_SECRET: ${{ vars.RUNTIME_SECRET }}
+          RUNTIME_SECRET_VERSION: ${{ vars.RUNTIME_SECRET_VERSION }}
+          DOMAIN: ${{ vars.PREVIEW_DOMAIN }}
+          ACME_EMAIL: ${{ vars.ACME_EMAIL }}
+          REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev
+          API_IMAGE: ${{ needs.images.outputs.api }}
+          WEB_IMAGE: ${{ needs.images.outputs.web }}
+
+  notify:
+    needs: [backend, frontend, infrastructure, images, deploy]
+    if: always() && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Job summary
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          printf '%s' "$JOB_RESULTS" | jq -r 'to_entries[] | "- \(.key): \(.value.result)"' >> "$GITHUB_STEP_SUMMARY"
+      - name: Discord notification
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          JOB_RESULTS: ${{ toJSON(needs) }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python3 infra/gcp/notify.py

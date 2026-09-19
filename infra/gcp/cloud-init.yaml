@@ -1,0 +1,36 @@
+#cloud-config
+package_update: true
+packages: [ca-certificates, curl, gnupg, python3]
+fs_setup:
+  - label: taskmanager-data
+    filesystem: ext4
+    device: /dev/disk/by-id/google-taskmanager-data
+    partition: none
+    overwrite: false
+mounts:
+  - ["LABEL=taskmanager-data", /var/lib/taskmanager, ext4, "defaults", "0", "2"]
+write_files:
+  - path: /etc/apt/sources.list.d/docker.list
+    defer: true
+    content: |
+      deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable
+  - path: /etc/apt/sources.list.d/google-cloud-sdk.list
+    defer: true
+    content: |
+      deb [signed-by=/etc/apt/keyrings/google.gpg] https://packages.cloud.google.com/apt cloud-sdk main
+  - path: /etc/systemd/system/docker.service.d/taskmanager.conf
+    content: |
+      [Unit]
+      RequiresMountsFor=/var/lib/taskmanager
+runcmd:
+  - [install, -d, -m, '0755', /etc/apt/keyrings]
+  - [curl, -fsSL, https://download.docker.com/linux/ubuntu/gpg, -o, /etc/apt/keyrings/docker.asc]
+  - [curl, -fsSL, https://packages.cloud.google.com/apt/doc/apt-key.gpg, -o, /tmp/google-cloud-key.asc]
+  - [gpg, --dearmor, --yes, -o, /etc/apt/keyrings/google.gpg, /tmp/google-cloud-key.asc]
+  - [chmod, a+r, /etc/apt/keyrings/docker.asc, /etc/apt/keyrings/google.gpg]
+  - [apt-get, update]
+  - [apt-get, install, -y, docker-ce, docker-ce-cli, containerd.io, docker-buildx-plugin, docker-compose-plugin, google-cloud-cli]
+  - [systemctl, daemon-reload]
+  - [systemctl, enable, --now, docker]
+  - [install, -d, -m, '0700', /opt/taskmanager/releases]
+final_message: Task Manager VM ready

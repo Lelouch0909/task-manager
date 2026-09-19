@@ -1,0 +1,10 @@
+.idea/
+.env
+.env.*
+!.env.example
+gha-creds-*.json
+runtime.json
+api.env
+mysql.env
+release.env
+__pycache__/

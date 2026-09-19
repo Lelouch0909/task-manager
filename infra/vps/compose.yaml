@@ -1,0 +1,52 @@
+name: taskmanager-vps
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    mem_limit: 1g
+    env_file:
+      - path: ./mysql.env
+        format: raw
+    volumes: [mysql_data:/var/lib/mysql]
+    healthcheck:
+      test: [CMD-SHELL, 'MYSQL_PWD="$${MYSQL_PASSWORD}" mysql --protocol=TCP -h 127.0.0.1 -u taskmanager taskmanager -e "SELECT 1" >/dev/null 2>&1']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+  api:
+    image: taskmanager-api:${IMAGE_TAG:?IMAGE_TAG required}
+    build:
+      context: ../../api
+      dockerfile: Dockerfile.remote
+    restart: unless-stopped
+    mem_limit: 1536m
+    env_file:
+      - path: ./api.env
+        format: raw
+    environment:
+      SPRING_PROFILES_ACTIVE: production
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?ALLOWED_ORIGINS required}
+    ports: ['8082:8080']
+    networks:
+      default:
+      proxy:
+        aliases: [taskmanager-api]
+    depends_on:
+      mysql: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --max-time, '4', 'http://localhost:8080/actuator/health/readiness']
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 60s
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+volumes:
+  mysql_data:
+networks:
+  proxy:
+    external: true
+    name: virall-preview_proxy
