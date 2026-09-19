@@ -45,7 +45,9 @@ En développement, `/api/*` est transmis à `http://localhost:8080` en conservan
 
 Le client accepte les options natives de Fetch. Pour envoyer du JSON, fournir `body: JSON.stringify(payload)` et l’en-tête `Content-Type: application/json`. Il renvoie `unknown` : les fonctionnalités devront valider les réponses selon le contrat backend. Les erreurs HTTP lèvent `ApiError` avec `status` et `details` ; les erreurs réseau et d’annulation sont propagées.
 
-En production, le proxy Vite n’existe pas : configurer un reverse proxy pour `/api`, ou définir `VITE_API_BASE_URL` lors du build vers l’API et autoriser l’origine frontend côté Spring. Les variables `VITE_*` sont publiques, intégrées au bundle : ne pas y mettre de secrets.
+Sur Vercel, choisir `web` comme Root Directory, puis définir `API_PROXY_TARGET=https://api.example.com` (l’origine de votre backend, sans `/api`). `vercel.mjs` utilise cette variable pour configurer le proxy. Conserver `VITE_API_BASE_URL=/api` pour les cookies sur la même origine. Aucun serveur distant n’est imposé dans le code. Une modification des variables nécessite un redéploiement.
+
+En local, `API_PROXY_TARGET` vaut `http://localhost:8080` par défaut ; le testeur lance donc sa propre API sans dépendre d’un serveur distant. Pour un autre hébergement, configurer également un reverse proxy `/api`. Les variables `VITE_*` sont publiques : ne pas y mettre de secrets. Côté Spring, `ALLOWED_ORIGINS` doit contenir l’origine exacte du frontend.
 
 ## Suite de l’implémentation
 
