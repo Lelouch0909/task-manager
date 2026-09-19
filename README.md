@@ -151,7 +151,6 @@ Le [guide GCP](infra/gcp/README.md) décrit la VM, les droits IAM, les secrets, 
 
 Le déploiement utilise les digests des images et tente de restaurer la version précédente si les contrôles échouent. Il ne révoque pas les migrations SQL.
 
-L’API dispose aussi d’un déploiement VPS : [API HTTPS](https://taskmanager.212.227.80.225.sslip.io/actuator/health/readiness), accessible sur le port public **443**. Le port 8082 reste local au serveur. Le [guide VPS et Vercel](infra/vps/README.md) décrit cette installation. Pour déployer le web sur Vercel, importer ce dépôt avec **Root Directory = web** et le preset **Vite** ; `web/vercel.json` configure les routes et le proxy API. L’origine prévue est `https://task-manager.vercel.app`.
 
 ## Limites actuelles
 
